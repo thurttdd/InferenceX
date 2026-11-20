@@ -2,6 +2,9 @@
 
 Run the AgentX client against an already-running OpenAI-compatible server.
 
+The [benchmark client image](container-image.md) runs the same replay with the
+runtime pre-installed.
+
 ## Install
 
 Install the pinned PyPI release in a Python 3.11–3.13 virtual environment:

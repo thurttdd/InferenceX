@@ -57,3 +57,14 @@ updates:
       patterns: ["*"]
   cooldown:
     default-days: 7
+- package-ecosystem: "docker"
+  directory: "/inferencex-e2e/docker"
+  schedule:
+    interval: "weekly"
+  open-pull-requests-limit: 0
+  groups:
+    security:
+      applies-to: security-updates
+      patterns: ["*"]
+  cooldown:
+    default-days: 7

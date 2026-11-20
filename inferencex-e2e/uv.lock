@@ -936,6 +936,14 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+bench-client = [
+    { name = "aiohttp" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "tokenizers" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
 recipes = [
     { name = "jinja2" },
     { name = "marshmallow" },
@@ -969,11 +977,14 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", marker = "extra == 'bench-client'", specifier = "==3.14.5" },
     { name = "codeowners", marker = "extra == 'workflows'", specifier = "==0.9.0" },
     { name = "gitpython", marker = "extra == 'workflows'", specifier = "==3.2.1" },
+    { name = "huggingface-hub", marker = "extra == 'bench-client'", specifier = "==2.4.0" },
     { name = "jinja2", marker = "extra == 'recipes'", specifier = "==3.1.6" },
     { name = "marshmallow", marker = "extra == 'recipes'", specifier = "==4.3.1" },
     { name = "marshmallow-dataclass", marker = "extra == 'recipes'", specifier = "==8.7.1" },
+    { name = "numpy", marker = "extra == 'bench-client'", specifier = "==2.5.4" },
     { name = "psycopg2-binary", marker = "extra == 'results'", specifier = "==2.9.13" },
     { name = "pydantic", specifier = "==2.14.2" },
     { name = "pygithub", marker = "extra == 'workflows'", specifier = "==2.10.0" },
@@ -982,8 +993,11 @@ requires-dist = [
     { name = "rich", marker = "extra == 'recipes'", specifier = "==15.0.0" },
     { name = "ruamel-yaml", marker = "extra == 'recipes'", specifier = "==0.19.1" },
     { name = "tabulate", marker = "extra == 'results'", specifier = "==0.10.0" },
+    { name = "tokenizers", marker = "extra == 'bench-client'", specifier = "==0.23.3" },
+    { name = "tqdm", marker = "extra == 'bench-client'", specifier = "==4.70.1" },
+    { name = "transformers", marker = "extra == 'bench-client'", specifier = "==5.22.1" },
 ]
-provides-extras = ["recipes", "workflows", "results"]
+provides-extras = ["recipes", "workflows", "results", "bench-client"]
 
 [package.metadata.requires-dev]
 test = [

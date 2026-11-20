@@ -1,0 +1,285 @@
+name: Container image
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: &image-paths
+      - 'inferencex-e2e/docker/**'
+      - 'inferencex-e2e/infx/**'
+      - 'inferencex-e2e/benchmarks/check_env.sh'
+      - 'inferencex-e2e/pyproject.toml'
+      - 'inferencex-e2e/uv.lock'
+      - 'inferencex-e2e/README.md'
+      - 'inferencex-e2e/LICENSE'
+      - '.github/workflows/container-image.yml'
+  push:
+    branches: [main]
+    # GitHub does not evaluate path filters for tag pushes, so every image-v* tag builds.
+    tags: ['image-v*']
+    paths: *image-paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      release: ${{ steps.resolve.outputs.release }}
+      latest: ${{ steps.resolve.outputs.latest }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      ghcr-image: ${{ steps.resolve.outputs.ghcr-image }}
+    steps:
+      - name: Resolve image version and publishing
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OWNER: ${{ github.repository_owner }}
+          PUBLISH_ENABLED: ${{ vars.IMAGE_PUBLISH_ENABLED }}
+        run: |
+          set -eo pipefail
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          release=false
+          latest=false
+          if [[ "$REF_TYPE" == tag ]]; then
+            version="${REF_NAME#image-v}"
+            if [[ ! "$version" =~ $semver ]]; then
+              echo "::error::tag $REF_NAME is not image-vX.Y.Z or image-vX.Y.Z-<prerelease>"
+              exit 1
+            fi
+            release=true
+            [[ "$version" == *-* ]] || latest=true
+          elif [[ "$EVENT_NAME" == pull_request ]]; then
+            version="0.0.0-pr.$PR_NUMBER"
+          else
+            # Docker tags stop at 128 characters, so long branch names are cut short.
+            ref="${REF_NAME//[^0-9A-Za-z]/-}"
+            version="0.0.0-${ref:0:40}.${SHA::7}"
+          fi
+          publish=false
+          if [[ "$EVENT_NAME" != pull_request && "$PUBLISH_ENABLED" == true ]]; then
+            if [[ "$REF_TYPE" == tag || "$REF_NAME" == main ]]; then
+              publish=true
+            fi
+          fi
+          {
+            echo "version=$version"
+            echo "release=$release"
+            echo "latest=$latest"
+            echo "publish=$publish"
+            echo "ghcr-image=ghcr.io/${OWNER,,}/inferencex-bench"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version release=$release latest=$latest publish=$publish"
+
+  test:
+    name: Build and test (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The OCI archive holds the exact image the tests run; publish pushes it unchanged.
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: inferencex-e2e
+          file: inferencex-e2e/docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            IMAGE_VERSION=${{ needs.prepare.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          provenance: false
+          sbom: false
+          outputs: |
+            type=docker,name=inferencex-bench:test
+            type=oci,dest=${{ runner.temp }}/image.tar
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+
+      - name: Run image tests
+        env:
+          INFERENCEX_IMAGE: inferencex-bench:test
+        run: >-
+          uvx --exclude-newer PT12H --from pytest==9.2.0 pytest
+          -c inferencex-e2e/pyproject.toml inferencex-e2e/infx/tests/container/test_image.py
+
+      - name: Upload tested image
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    name: Publish (${{ matrix.arch }})
+    needs: [prepare, test]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: container-image
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push image layers to GHCR
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Download tested image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: vars.DOCKERHUB_IMAGE != ''
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Pushed untagged by digest; the merge job tags the multi-arch manifest list.
+      - name: Push tested image by digest
+        env:
+          GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr-image }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -eo pipefail
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          archive="$RUNNER_TEMP/image/image.tar"
+          digest="$(tar -xOf "$archive" index.json | jq -r '.manifests[0].digest')"
+          targets=("$GHCR_IMAGE")
+          if [[ -n "$DOCKERHUB_IMAGE" ]]; then
+            targets+=("docker.io/$DOCKERHUB_IMAGE")
+          fi
+          for target in "${targets[@]}"; do
+            skopeo copy --preserve-digests "oci-archive:$archive" "docker://$target@$digest"
+          done
+          mkdir -p "$RUNNER_TEMP/digests"
+          printf '%s' "$digest" > "$RUNNER_TEMP/digests/$ARCH"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  merge:
+    name: Tag manifest list
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    environment: container-image
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write # push the tagged manifest list to GHCR
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: image-digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: vars.DOCKERHUB_IMAGE != ''
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: |
+            ${{ needs.prepare.outputs.ghcr-image }}
+            name=docker.io/${{ vars.DOCKERHUB_IMAGE }},enable=${{ vars.DOCKERHUB_IMAGE != '' }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }},enable=${{ needs.prepare.outputs.release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }},enable=${{ needs.prepare.outputs.latest == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.prepare.outputs.version }},enable=${{ needs.prepare.outputs.latest == 'true' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.latest == 'true' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ github.ref_type != 'tag' }}
+
+      - name: Create manifest list and push
+        env:
+          GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr-image }}
+          DIGEST_DIR: ${{ runner.temp }}/digests
+        run: |
+          set -eo pipefail
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          test "${#tags[@]}" -gt 0
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=(--tag "$tag")
+          done
+          sources=()
+          for digest_file in "$DIGEST_DIR"/*; do
+            sources+=("$GHCR_IMAGE@$(cat "$digest_file")")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          for tag in "${tags[@]}"; do
+            docker buildx imagetools inspect "$tag"
+          done

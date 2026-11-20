@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -16,6 +17,13 @@ from infx.bench.env import BenchError
 
 PYTHON_VERSION = "3.11"
 REQUIREMENTS = Path(__file__).with_name("requirements.txt")
+_HARNESS = re.compile(r"^agentx-harness==(\S+)", re.MULTILINE)
+
+
+def harness_version(requirements: Path) -> str | None:
+    """The ``agentx-harness`` version ``requirements`` pins, or ``None`` when it pins none."""
+    match = _HARNESS.search(requirements.read_text())
+    return match.group(1) if match else None
 
 
 @dataclass(frozen=True)

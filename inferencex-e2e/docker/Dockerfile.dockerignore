@@ -1,0 +1,9 @@
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!infx
+infx/tests
+**/__pycache__
+**/*.pyc

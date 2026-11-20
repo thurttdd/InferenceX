@@ -19,7 +19,7 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from infx.bench.agentic.venv import REQUIREMENTS
+from infx.bench.agentic.venv import REQUIREMENTS, harness_version
 from infx.config import repository_root
 from infx.launch.evidence import error_detail
 from infx.launch.request import BATCH_REENTRY_ENV
@@ -28,7 +28,6 @@ from infx.results.collect_events import FILENAME, SCHEMA_VERSION
 AGENTIC = "agentic-coding"
 _SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _PINNED = re.compile(r"@(sha256:[0-9a-f]{64})$")
-_HARNESS = re.compile(r"^agentx-harness==(\S+)", re.MULTILINE)
 _RESULT_GPUS = re.compile(r"_gpus_([0-9]+)")
 
 
@@ -540,8 +539,7 @@ def _versions(env: Mapping[str, str], *, agentx: bool) -> Versions:
     harness = None
     if agentx:
         with contextlib.suppress(OSError):
-            match = _HARNESS.search(REQUIREMENTS.read_text())
-            harness = match.group(1) if match else None
+            harness = harness_version(REQUIREMENTS)
     return Versions(
         inferencex_sha=head,
         workflow_sha=workflow if workflow != head else None,
